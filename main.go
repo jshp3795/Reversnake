@@ -30,9 +30,10 @@ const (
 
 	blockWidth    = 40
 	blockHeight   = 40
-	maxFrameCount = 6
+	maxFrameCount = 4
 
-	maxLength = 10
+	initialStarveDelay   = 5000
+	starveDelayIncrement = 1000
 
 	DIRECTION_NIL   = -1
 	DIRECTION_LEFT  = 0
@@ -64,7 +65,7 @@ type Snake struct {
 	lastDirection   int
 	hitWall         bool
 	starveTimestamp int64
-	starveDuration  int64
+	starveDelay     int64
 }
 
 type Food struct {
@@ -93,12 +94,13 @@ func (g *Game) Start() error {
 	g.started = true
 	g.rand = rand.New(rand.NewSource(time.Now().UnixNano()))
 	g.snake = Snake{
-		frameCount:    0,
-		positions:     []Position{{posX: 11, posY: 2}, {posX: 10, posY: 2}, {posX: 9, posY: 2}, {posX: 8, posY: 2}, {posX: 7, posY: 2}, {posX: 6, posY: 2}, {posX: 5, posY: 2}, {posX: 4, posY: 2}, {posX: 3, posY: 2}, {posX: 2, posY: 2}},
-		direction:     DIRECTION_RIGHT,
-		lastDirection: DIRECTION_RIGHT,
-		hitWall:       false,
-	}
+		frameCount:      0,
+		positions:       []Position{{posX: 11, posY: 2}, {posX: 10, posY: 2}, {posX: 9, posY: 2}, {posX: 8, posY: 2}, {posX: 7, posY: 2}, {posX: 6, posY: 2}, {posX: 5, posY: 2}, {posX: 4, posY: 2}, {posX: 3, posY: 2}, {posX: 2, posY: 2}},
+		direction:       DIRECTION_RIGHT,
+		lastDirection:   DIRECTION_RIGHT,
+		hitWall:         false,
+		starveTimestamp: g.timestamp + initialStarveDelay,
+		starveDelay:     initialStarveDelay}
 	g.food = Food{
 		frameCount:  maxFrameCount,
 		position:    Position{posX: 24, posY: 13},
@@ -113,6 +115,12 @@ func (g *Game) Start() error {
 		used:     false,
 		duration: 3000}
 	return nil
+}
+
+func (g *Game) Finish(title string) {
+	g.title = title
+	g.started = false
+	g.endTimestamp = time.Now().UnixMilli()
 }
 
 func (g *Game) Update() error {
@@ -211,7 +219,7 @@ func (g *Game) Draw(screen *ebiten.Image) {
 		bounds, _ := font.BoundString(textFont, timeString)
 
 		text.Draw(screen, timeString, textFont, (screenWidth-bounds.Max.X.Floor())/2, screenHeight-50, color.White)
-		text.Draw(screen, "14 / 30초간 굶음", textFont, 40, screenHeight-50, color.White)
+		text.Draw(screen, fmt.Sprintf("%d / %d초간 굶음", (g.snake.starveDelay-(g.snake.starveTimestamp-time.Now().UnixMilli()))/1000, g.snake.starveDelay/1000), textFont, 40, screenHeight-50, color.White)
 	} else {
 		timeString := fmt.Sprintf("%.1f 초", float64(g.endTimestamp-g.timestamp)/1000)
 
@@ -302,9 +310,7 @@ func (g *Game) Layout(outsideWidth, outsideHeight int) (int, int) {
 
 func moveSnake(g *Game) {
 	if len(g.snake.positions) == 0 {
-		g.title = "먹이에게 잡아먹힘"
-		g.started = false
-		g.endTimestamp = time.Now().UnixMilli()
+		g.Finish("먹이에게 잡아먹힘")
 		return
 	}
 
@@ -340,7 +346,17 @@ func moveSnake(g *Game) {
 		}
 	}
 
-	g.snake.positions = append([]Position{newPosition}, g.snake.positions[:len(g.snake.positions)-1]...)
+	if g.snake.starveTimestamp < time.Now().UnixMilli() {
+		if len(g.snake.positions) == 1 {
+			g.Finish("먹이를 먹지 못해 아사함")
+			return
+		}
+		g.snake.starveDelay += starveDelayIncrement
+		g.snake.starveTimestamp = time.Now().UnixMilli() + g.snake.starveDelay
+		g.snake.positions = append([]Position{newPosition}, g.snake.positions[:len(g.snake.positions)-2]...)
+	} else {
+		g.snake.positions = append([]Position{newPosition}, g.snake.positions[:len(g.snake.positions)-1]...)
+	}
 }
 
 func moveFood(g *Game) {
@@ -365,9 +381,8 @@ func checkCollision(g *Game) {
 	for _, p := range g.snake.positions {
 		if p.posX == g.food.position.posX &&
 			p.posY == g.food.position.posY {
-			g.title = "뱀에게 잡아먹힘"
-			g.started = false
-			g.endTimestamp = time.Now().UnixMilli()
+			g.Finish("뱀에게 잡아먹힘")
+			return
 		}
 	}
 }
@@ -376,9 +391,8 @@ func checkGoldenCollision(g *Game) {
 	for i, p := range g.snake.positions {
 		if p.posX == g.food.position.posX && p.posY == g.food.position.posY {
 			if len(g.snake.positions) == 0 {
-				g.title = "먹이에게 잡아먹힘"
-				g.started = false
-				g.endTimestamp = time.Now().UnixMilli()
+				g.Finish("먹이에게 잡아먹힘")
+				return
 			} else if i <= len(g.snake.positions)/2 {
 				g.snake.positions = g.snake.positions[:i]
 			} else {
@@ -406,21 +420,6 @@ func main() {
 		Size: 40,
 		DPI:  72,
 	})
-
-	/*tt, err := opentype.Parse(fonts.MPlus1pRegular_ttf)
-	if err != nil {
-		log.Fatal(err)
-	}*/
-
-	/*const dpi = 72
-	textFont, err = opentype.NewFace(tt, &opentype.FaceOptions{
-		Size:    24,
-		DPI:     dpi,
-		Hinting: font.HintingVertical,
-	})
-	if err != nil {
-		log.Fatal(err)
-	}*/
 
 	ebiten.SetWindowSize(screenWidth, screenHeight)
 	ebiten.SetWindowTitle("Reversnake (Snake Reversed)")
